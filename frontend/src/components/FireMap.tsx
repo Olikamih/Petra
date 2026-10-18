@@ -1,4 +1,5 @@
-import { useEffect } from "react";
+
+import { useEffect, useMemo } from "react";
 import {
   MapContainer,
   TileLayer,
@@ -37,51 +38,42 @@ function formatConfidence(value: string | null): string {
 
 function formatDate(value: string): string {
   const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) return value;
-
-  return date.toLocaleString("pt-BR");
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleString("pt-BR");
 }
 
 const fireIcon = L.divIcon({
   className: "fire-marker-container",
-  html: '<div class="fire-marker" aria-label="Detecção de incêndio"><span>🔥</span></div>',
-  iconSize: [36, 36],
-  iconAnchor: [18, 18],
-  popupAnchor: [0, -18],
+  html: '<div class="fire-marker"><span>🔥</span></div>',
+  iconSize: [28, 28],
+  iconAnchor: [14, 14],
+  popupAnchor: [0, -14],
 });
 
 function FitBounds({ fires }: { fires: Fire[] }) {
   const map = useMap();
 
   useEffect(() => {
-    const validFires = fires.filter(
-      (fire) =>
-        Number.isFinite(fire.latitude) &&
-        Number.isFinite(fire.longitude) &&
-        Math.abs(fire.latitude) <= 90 &&
-        Math.abs(fire.longitude) <= 180
-    );
+    if (fires.length === 0) return;
 
-    if (validFires.length === 0) return;
-
-    if (validFires.length === 1) {
-      map.flyTo(
-        [validFires[0].latitude, validFires[0].longitude],
+    if (fires.length === 1) {
+      map.setView(
+        [fires[0].latitude, fires[0].longitude],
         8,
-        { duration: 0.8 }
+        { animate: false }
       );
       return;
     }
 
     const bounds = L.latLngBounds(
-      validFires.map((fire) => [fire.latitude, fire.longitude])
+      fires.map((fire) => [fire.latitude, fire.longitude])
     );
 
-    map.flyToBounds(bounds, {
-      padding: [36, 36],
+    map.fitBounds(bounds, {
+      padding: [24, 24],
       maxZoom: 8,
-      duration: 0.8,
+      animate: false,
     });
   }, [fires, map]);
 
@@ -89,47 +81,86 @@ function FitBounds({ fires }: { fires: Fire[] }) {
 }
 
 function FireMap({ fires, hotspots, showHotspots }: FireMapProps) {
-  const validFires = fires.filter(
-    (fire) =>
-      Number.isFinite(fire.latitude) &&
-      Number.isFinite(fire.longitude) &&
-      Math.abs(fire.latitude) <= 90 &&
-      Math.abs(fire.longitude) <= 180
+  const validFires = useMemo(
+    () =>
+      fires.filter(
+        (fire) =>
+          Number.isFinite(fire.latitude) &&
+          Number.isFinite(fire.longitude) &&
+          Math.abs(fire.latitude) <= 90 &&
+          Math.abs(fire.longitude) <= 180
+      ),
+    [fires]
   );
 
-  const validHotspots = hotspots.filter(
-    (hotspot) =>
-      Number.isFinite(hotspot.center.latitude) &&
-      Number.isFinite(hotspot.center.longitude) &&
-      Math.abs(hotspot.center.latitude) <= 90 &&
-      Math.abs(hotspot.center.longitude) <= 180
+  const validHotspots = useMemo(
+    () =>
+      hotspots.filter(
+        (hotspot) =>
+          Number.isFinite(hotspot.center.latitude) &&
+          Number.isFinite(hotspot.center.longitude) &&
+          Math.abs(hotspot.center.latitude) <= 90 &&
+          Math.abs(hotspot.center.longitude) <= 180
+      ),
+    [hotspots]
   );
 
-  const maxDetections = Math.max(
-    1,
-    ...validHotspots.map((hotspot) => hotspot.detections)
+  // Limita os elementos visuais mais pesados do Leaflet.
+  // A API e a lista completa de ocorrências continuam intactas.
+  const visibleFires = useMemo(
+    () =>
+      [...validFires]
+        .sort((a, b) => (b.frp ?? 0) - (a.frp ?? 0))
+        .slice(0, 500),
+    [validFires]
   );
+
+  const maxDetections = useMemo(
+    () =>
+      Math.max(
+        1,
+        ...validHotspots.map((hotspot) => hotspot.detections)
+      ),
+    [validHotspots]
+  );
+
+  const priorityColors: Record<string, string> = {
+    critica: "#ff1744",
+    alta: "#ff7849",
+    moderada: "#ffc857",
+    baixa: "#a3e635",
+  };
 
   return (
     <MapContainer
       center={[-1.4558, -48.4902]}
       zoom={6}
-      scrollWheelZoom
+      scrollWheelZoom={false}
       zoomControl
       preferCanvas
-      style={{ height: "65vh", minHeight: "380px", width: "100%" }}
+      style={{
+        height: "min(65vh, 600px)",
+        minHeight: "320px",
+        width: "100%",
+        background: "#101820",
+      }}
     >
       <TileLayer
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        updateWhenIdle
+        keepBuffer={2}
       />
 
       <FitBounds fires={validFires} />
 
       {showHotspots &&
         validHotspots.map((hotspot) => {
+          const color =
+            priorityColors[hotspot.priority?.level ?? ""] ?? "#a3e635";
+
           const radius =
-            8 + (hotspot.detections / maxDetections) * 20;
+            8 + (hotspot.detections / maxDetections) * 16;
 
           return (
             <CircleMarker
@@ -140,9 +171,9 @@ function FireMap({ fires, hotspots, showHotspots }: FireMapProps) {
               ]}
               radius={radius}
               pathOptions={{
-                color: "#ff7849",
-                fillColor: "#ff4d32",
-                fillOpacity: 0.28,
+                color,
+                fillColor: color,
+                fillOpacity: 0.35,
                 weight: 2,
               }}
             >
@@ -151,9 +182,23 @@ function FireMap({ fires, hotspots, showHotspots }: FireMapProps) {
                   <strong>
                     Área de concentração #{hotspot.cluster_id}
                   </strong>
+
                   <span>
-                    Detecções agrupadas: {hotspot.detections}
+                    Prioridade: {(
+                      hotspot.priority?.level ?? "Sem classificação"
+                    ).toUpperCase()}
                   </span>
+
+                  <span>
+                    Pontuação: {hotspot.priority?.score ?? "N/A"}
+                  </span>
+
+                  {hotspot.priority?.reasons.map((reason, index) => (
+                    <span key={index}>• {reason}</span>
+                  ))}
+
+                  <span>Detecções agrupadas: {hotspot.detections}</span>
+
                   <span>
                     FRP médio:{" "}
                     {hotspot.average_frp == null
@@ -162,12 +207,15 @@ function FireMap({ fires, hotspots, showHotspots }: FireMapProps) {
                           maximumFractionDigits: 2,
                         })} MW`}
                   </span>
+
                   <span>
                     Primeira detecção: {formatDate(hotspot.first_detection)}
                   </span>
+
                   <span>
                     Última detecção: {formatDate(hotspot.last_detection)}
                   </span>
+
                   <span>
                     Centro: {hotspot.center.latitude.toFixed(4)},{" "}
                     {hotspot.center.longitude.toFixed(4)}
@@ -178,7 +226,7 @@ function FireMap({ fires, hotspots, showHotspots }: FireMapProps) {
           );
         })}
 
-      {validFires.map((fire) => (
+      {visibleFires.map((fire) => (
         <Marker
           key={fire.id}
           position={[fire.latitude, fire.longitude]}

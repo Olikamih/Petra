@@ -5,6 +5,51 @@ from sqlalchemy.orm import Session
 from app.database.models import Fire
 
 
+def _classify_priority(
+    detections: int,
+    average_frp: float | None,
+    high_confidence_ratio: float,
+) -> dict:
+    """Classifica a prioridade por regras heurísticas, não por previsão."""
+
+    score = 0
+    reasons = []
+
+    if detections >= 20:
+        score += 2
+        reasons.append("Grande quantidade de deteccoes")
+    elif detections >= 8:
+        score += 1
+        reasons.append("Quantidade relevante de deteccoes")
+
+    if average_frp is not None:
+        if average_frp >= 20:
+            score += 2
+            reasons.append("FRP medio elevado")
+        elif average_frp >= 8:
+            score += 1
+            reasons.append("FRP medio moderado")
+
+    if high_confidence_ratio >= 0.5:
+        score += 1
+        reasons.append("Pelo menos metade das deteccoes tem confianca alta")
+
+    if score >= 5:
+        level = "critica"
+    elif score >= 3:
+        level = "alta"
+    elif score >= 1:
+        level = "moderada"
+    else:
+        level = "baixa"
+
+    return {
+        "level": level,
+        "score": score,
+        "reasons": reasons or ["Poucos indicadores de prioridade nos criterios utilizados"],
+    }
+
+
 def cluster_hotspots(
     db: Session,
     radius_km: float = 5.0,
@@ -13,10 +58,10 @@ def cluster_hotspots(
     confidence: str | None = None,
 ) -> dict:
     """
-    Agrupa detecções de calor geograficamente próximas.
+    Agrupa deteccoes geograficamente proximas com DBSCAN.
 
-    Os filtros de fonte e confiança são aplicados antes do DBSCAN.
-    Os agrupamentos são descritivos, não previsões de incêndios futuros.
+    A prioridade e heuristica e descritiva; nao representa
+    previsao validada de incendios futuros.
     """
     if radius_km <= 0:
         raise ValueError("radius_km deve ser maior que zero.")
@@ -95,6 +140,26 @@ def cluster_hotspots(
             if fire.frp is not None
         ]
 
+        average_frp = (
+            float(np.mean(frp_values)) if frp_values else None
+        )
+
+        high_confidence_count = sum(
+            1
+            for fire in grouped_fires
+            if (fire.confidence or "").strip().lower() in ("h", "high")
+        )
+
+        high_confidence_ratio = (
+            high_confidence_count / len(grouped_fires)
+        )
+
+        priority = _classify_priority(
+            detections=len(grouped_fires),
+            average_frp=average_frp,
+            high_confidence_ratio=high_confidence_ratio,
+        )
+
         clusters.append(
             {
                 "cluster_id": int(label),
@@ -107,9 +172,10 @@ def cluster_hotspots(
                         np.mean([fire.longitude for fire in grouped_fires])
                     ),
                 },
-                "average_frp": (
-                    float(np.mean(frp_values)) if frp_values else None
-                ),
+                "average_frp": average_frp,
+                "high_confidence_detections": high_confidence_count,
+                "high_confidence_ratio": round(high_confidence_ratio, 3),
+                "priority": priority,
                 "first_detection": min(
                     fire.detected_at for fire in grouped_fires
                 ).isoformat(),
@@ -118,6 +184,16 @@ def cluster_hotspots(
                 ).isoformat(),
             }
         )
+
+    clusters.sort(
+        key=lambda cluster: (
+            {"critica": 3, "alta": 2, "moderada": 1, "baixa": 0}[
+                cluster["priority"]["level"]
+            ],
+            cluster["detections"],
+        ),
+        reverse=True,
+    )
 
     return {
         "algorithm": "DBSCAN",

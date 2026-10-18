@@ -1,3 +1,4 @@
+
 export interface Hotspot {
   cluster_id: number;
   detections: number;
@@ -6,6 +7,13 @@ export interface Hotspot {
     longitude: number;
   };
   average_frp: number | null;
+  high_confidence_detections?: number;
+  high_confidence_ratio?: number;
+  priority?: {
+    level: "critica" | "alta" | "moderada" | "baixa" | string;
+    score: number;
+    reasons: string[];
+  };
   first_detection: string;
   last_detection: string;
 }
@@ -20,8 +28,10 @@ export interface HotspotResponse {
   clusters: Hotspot[];
 }
 
-const API_URL = "http://127.0.0.1:8000";
-
+const API_URL = (
+  import.meta.env.VITE_API_URL ||
+  "https://petra-api-2ofy.onrender.com"
+).replace(/\/+$/, "");
 
 export async function getHotspots(
   source: string = "all",
@@ -38,12 +48,17 @@ export async function getHotspots(
   }
 
   const query = params.toString();
-  const url = `${API_URL}/api/ai/hotspots${query ? `?${query}` : ""}`;
+
+  const url = `${API_URL}/api/ai/hotspots${
+    query ? `?${query}` : ""
+  }`;
 
   const response = await fetch(url);
 
   if (!response.ok) {
-    throw new Error("Não foi possível obter os agrupamentos.");
+    throw new Error(
+      `Erro ao obter agrupamentos: HTTP ${response.status}`
+    );
   }
 
   return response.json();
